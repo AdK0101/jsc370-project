@@ -671,6 +671,15 @@ leaflet(merged.nbd_summary) %>%
 
 **Figure 5: Map of Toronto Neighbourhoods with Mean Price of AirBnB listings**
 
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+# Just in case the map does not render. 
+
+#install.packages("webshot")
+webshot::install_phantomjs()
+
+```
+
 
 Finally, we draw a map, where each marker is on a neighbourhood, and written on the marker is the mean price for an AirBnB listing in that neighbourhood. The darker the colour, the higher the price. Hovering over each marker will yield the neighbourhood name. 
 
