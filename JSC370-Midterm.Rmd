@@ -403,9 +403,14 @@ kable(stats_df) %>%
 
 **Table 2: Summary Statistics For Numerical Variables**
 
-In table 2, we see that none of the variables have any missing values. For all of the variables, the mean is larger than the median. As well, the mean for all variables appears to be closer to the min value, than the max. Both of these facts indicate that all of the distributions are to some degree, right-skewed. 
+In table 2, we see that none of the variables have any missing values. For all of the variables, the mean is larger than the median. As well, the mean for all variables appears to be closer to the min value, than the max. Both of these facts indicate that all of the distributions are to some degree, right-skewed. In fact, we can separately compute the number of outliers for the relevant variables as follows:
 
-This makes sense for all of the variables. Most properties that are listed are likely normal houses or apartments, so the right skew occurs due to the occasional lister who puts up a property for rent that is very upscale. A similar rationale explains why household income is right skewed. As for distance to downtown, the right skew also makes sense. One would expect that most properties in Toronto proper, would be centred around Downtown, so for most places, the distance would be small, and hence, a right skew. For crimes per day, most places would be relatively safe, except for a handful of neighbourhoods.  
+  - Price has 628 outliers
+  - Crimes per day in neighbourhood in past year has 272 outliers
+  - Scaled neighbourhood household income has 454 outliers
+  - Distance from downtown has 198 outliers
+
+The reason why we did not remove outliers, is that the outliers make sense for all of the variables. Most properties that are listed are likely normal houses or apartments, so the right skew occurs due to the occasional lister who puts up a property for rent that is very upscale. A similar rationale explains why household income is right skewed. As for distance to downtown, the right skew also makes sense. One would expect that most properties in Toronto proper, would be centred around Downtown, so for most places, the distance would be small, and hence, a right skew. For crimes per day, most places would be relatively safe, except for a handful of neighbourhoods.  
 
 Now we look at the one categorical variable represented in our research question. 
 
@@ -744,7 +749,7 @@ Finally, the $R^2 = 0.2171$, which means that about 21.7% of the variation in th
 
 In conclusion, we end up rejecting the theory we postulated in section one about whether neighbourhood characteristics impact prices. The ANOVA tells us in general, that there exist difference in prices between neighbourhoods. And the linear regression gives us an explicit relationship between certain neighbourhood characteristics and price. In other words, we conclude a lot of the same neighbourhood characteristics that one would expect that the houses for sale would be affected by, are also things that affect AirBnBs in general. 
 
-However, it is worth taking our results with a grain of caution. Only 21.7% of the variation in the response is explained by the predictors, which means that our model does not have strong explanatory power. So it may not be easily generalisable to other settings - not just Toronto. 
+However, it is worth taking our results with a grain of caution. Only 21.7% of the variation in the response is explained by the predictors, which means that our model does not have strong explanatory power. There are further limitations to our analysis. For instance, the median household income comes from the 2021 census (which is the most recent time we can find the relevant data), and yet the rest of our data is from 2023-24. This is a unavoidable issue with the scope of our project. 
 
 # 5. References
 
