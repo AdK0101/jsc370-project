@@ -420,9 +420,9 @@ property_table <- table(merged$property_type)
 
 prop_property <- prop.table(property_table)
 
-property_df <- data.frame(type = names(property_table),
-                          count = as.numeric(property_table),
-                          proportion = as.numeric(prop_property))
+property_df <- data.frame(Type = names(property_table),
+                          Count = as.numeric(property_table),
+                          Proportion = as.numeric(prop_property))
 
 property_df <- property_df[property_df$count > 0,]
 
@@ -749,7 +749,7 @@ Finally, the $R^2 = 0.2171$, which means that about 21.7% of the variation in th
 
 In conclusion, we end up rejecting the theory we postulated in section one about whether neighbourhood characteristics impact prices. The ANOVA tells us in general, that there exist difference in prices between neighbourhoods. And the linear regression gives us an explicit relationship between certain neighbourhood characteristics and price. In other words, we conclude a lot of the same neighbourhood characteristics that one would expect that the houses for sale would be affected by, are also things that affect AirBnBs in general. 
 
-However, it is worth taking our results with a grain of caution. Only 21.7% of the variation in the response is explained by the predictors, which means that our model does not have strong explanatory power. There are further limitations to our analysis. For instance, the median household income comes from the 2021 census (which is the most recent time we can find the relevant data), and yet the rest of our data is from 2023-24. This is a unavoidable issue with the scope of our project. 
+However, it is worth taking our results with a grain of caution. Only 21.7% of the variation in the response is explained by the predictors, which means that our model does not have strong explanatory power. There are further limitations to our analysis. For instance, the median household income comes from the 2021 census (which is the most recent time we can find the relevant data), and yet the rest of our data is from 2023-24. This is a unavoidable issue with the scope of our project. With that said, there are plenty of ways to make our analysis more robust going forward - for example, the usage of boosting to build more advanced models. 
 
 # 5. References
 
