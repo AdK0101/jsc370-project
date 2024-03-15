@@ -1,0 +1,753 @@
+---
+title: "JSC370 Midterm"
+author: "Aditya Khan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(leaflet)
+library(readxl)
+library(geosphere)
+library(knitr)
+library(kableExtra)
+library(tidytext)
+library(tidyverse)
+library(wordcloud)
+library(tm)
+library(RColorBrewer)  
+library(gridExtra)
+library(htmltools)
+library(cowplot)
+library(pastecs)
+#install.packages("xml2")
+```
+
+# 1. Introduction
+## 1.1. Background and Research Objective
+When trying to analyse how pricing works in the rental market, the immediate factors behind listing price that immediately come to mind are related to characteristics of the property itself. The intuition would be that other factors like the characteristics of the neighbourhood the listing is in probably would not be as important. The reason being that consumers are less likely to have a strong understanding of characteristics of neighbourhoods if they are travelling. Hence in theory, renters are not required to adjust their price (to a great degree) for the characteristics of the neighbourhood the property is in. This would be in stark contrast to the housing market.
+
+Our objective is to test this theory: to what extent does the characteristics of the neighbourhood actually impact the price of a rental listing? We choose to restrict our setting to AirBnBs and specifically those in Toronto. AirBnBs are chosen because the data is easily obtainable online. Toronto is chosen as the city, due to the fact that it has a good mix of both affluent neighbourhoods (e.g. Trinity Bellwoods), and less affluent ones. 
+
+We choose the neighbourhood characteristics we study according to the following heuristic: what neighbourhood characteristics could potentially impact prices? First, we consider the safety of the neighbourhood. Secondly we consider the median household income of the neighbourhood. Thirdly, we consider the proximity of the place to downtown. The last is important to consider, because proximity to downtown is an indicator for things like quick access to amenities (downtown has a high concentration of shops) and access to luxuries. 
+
+With that said, there is clear confounders that we need to adjust for: namely the property type. Different property types would generally fetch different prices. 
+
+In light of the above discussion, our research question is hence: to what extent is there an association between price of an AirBnB listing in Toronto, and 1) the safety of the neighbourhood the listing is in, 2) the median household income of the neighbourhood, and 3) proximity to downtown? Does this association (if it exists) differ by property type?
+
+## 1.2. Data Description
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+abnb <- read.csv("data/feb 24.csv", na.strings = c("", NA))
+setDT(abnb)
+dim(abnb)
+
+crime <- read.csv("data/Major_Crime_Indicators_Open_Data.csv")
+setDT(crime)
+dim(crime)
+
+nbd_profiles <- read_xlsx("data/neighbourhood-profiles-2021-158-model.xlsx")
+dim(nbd_profiles)
+
+```
+
+The primary dataset that we use, is AirBnB data from Toronto that was scraped on February 14, 2024 by InsideAirBnB. Each row in this dataset is a listing, and each column is some feature about the listing. There are 20630 observations in this dataset, and 75 features. Notably, all variables that we listed in our research question are present in this dataset except for two: 
+
+
+  - the amount of crime in a neighbourhood, and
+  - the median household income of the neighbourhood.
+
+
+To find the amount of crime in each neighbourhood, we use data the "Major Crime Indicators (MCI) Open Data" from the Toronto Police Service. Each observation is a major crime (all since 2014). There are 372899 observations. Each column is some feature about the  crime. There are 31 columns. Notably, the columns include which neighbourhood the crime was committed in. We choose to focus on MCIs (rather than petty crimes), because major crimes are the most likely to affect public perception of the safety of a neighbourhood, and hence, prices of a listing. 
+
+The median household income, is obtained from City of Toronto's Open Data. This data computes summary statistics for each neighbourhood in the city, based on the 2021 Canadian census. Each row is a relevant summary statistics (of which there are 2603) and each column is a neighbourhood (of which there are 158). 
+
+# 2. Methods
+## 2.1. Wrangling Each Dataset Separately
+
+All of the datasets were CSV or XLSX files downloaded from the websites mentioned in the references sections. In the references section, [1] is the website to download the AirBnB data. Navigate to the section titled Toronto, and download "listings.csv.gz", under February 14, 2024. [3] is the website to download the MCI Open Data. [4] is the website to download the Neighbourhood Profile data. For the latter two, there is a download button on the website.
+
+Altogether, we have three datasets that need to be merged. But before we do that, we need to fix underlying issues that are intrinsic to the dataset. After that is done, we fix issues that can be identified only after merging, and compute any remaining key variables that we need.
+
+### 2.1.1. Wrangling the Crime Data
+
+```{r echo = FALSE, message=FALSE, warning=FALSE,results='hide'}
+
+summary(crime)
+str(crime)
+head(crime)
+
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE,results='hide'}
+# I take inspiration from my HW1 code here. 
+false_x <- crime[crime$LONG_WGS84 == 0][1]$X
+false_y <- crime[crime$LONG_WGS84 == 0][1]$Y
+crime[] <- lapply(crime, function(x) gsub("NSA", NA, x))
+
+crime$LONG_WGS84[crime$LONG_WGS84 == 0] <- NA
+crime$LAT_WGS84[crime$LAT_WGS84 == 0] <- NA
+crime$X[crime$X == false_x] <- NA
+crime$Y[crime$Y == false_y] <- NA
+
+crime_sub <- crime[, c("OCC_YEAR", "OCC_MONTH", "OCC_DAY", "NEIGHBOURHOOD_158", "LONG_WGS84", "LAT_WGS84")]
+crime_sub <- na.omit(crime_sub)
+crime_sub$occ_month_int <- match(crime_sub$OCC_MONTH, month.name)
+crime_sub$DATE_OCC <- make_datetime(year = as.numeric(crime_sub$OCC_YEAR), month = crime_sub$occ_month_int, day = as.numeric(crime_sub$OCC_DAY))
+target_date <- as.Date("2024-02-14")
+crime_sub <- filter(crime_sub, DATE_OCC >= (target_date - 365), DATE_OCC <= target_date)
+crime_count <- crime_sub[, .(crime_count = .N), by = NEIGHBOURHOOD_158]
+crime_count$crime_count <- crime_count$crime_count / 365
+```
+
+We first wrangled the crime data. This data contained a number of issues. In terms of missing data, the data description for this dataset mentions that geographical missing data is specified as "NSA" for neighbourhood data if either the police division for the observations is also "NSA" or the X, Y coordinates are 0 or outside of Toronto. Taking these conditions into account, we replace occurrences of "NSA" and unrealistic longitude, latitude, X, and Y data (those that are clearly outside Toronto) with NA. 
+
+Another notable issue, was that the occurrence dates for crimes in this dataset (given by "OCC_DATE") were not of type datetime (but rather strings). Furthermore, these dates were incorrect, since for all crimes, the time occurred is listed as occurring at 5 am. Hence, we recalculate the date correctly as a datetime variable. 
+
+Finally, we recall that the point of this dataset was to get an understanding of how safe a neighborhood is. Duly, we create a new variable "crime_count" which is defined as the amount of crimes that were committed per day in a given neighbourhood, within a year of February 14, 2024; the day the AirBnB listings are from. The reason why we only interested in recent criminality, is that it would provide a more accurate understanding of how safe the neighbourhood is at the point of time the listing was given. 
+
+### 2.1.1. Wrangling the Income Data
+
+```{r echo = FALSE, message=FALSE, warning=FALSE,results='hide'}
+summary(nbd_profiles)
+str(nbd_profiles)
+
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE,results='hide'}
+
+median_data <- subset(nbd_profiles, `Neighbourhood Name` == "Median total income of household in 2020 ($)")
+summary(median_data)
+str(median_data)
+head(median_data)
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results ='hide'}
+med_t <- t(median_data[-1])
+med_dt <- setDT(data.frame(nbd = rownames(med_t), nbd.med_hh = as.numeric(med_t)))
+```
+
+Next we wrangle the neighbourhood profile data from Open Data from City of Toronto. In this data, we are only interested in obtaining the median household income for each neighbourhood, so we only clean this particular subset of the data. There was no missing data, and all of the data appeared to be realistic. The first issue though, was that the data had neighbourhoods as the columns in the dataset, and not under just one column. Since this would be a problem when we merge with the other datasets on a *single* neighbourhood column, we transposed the data such that all of the neighbourhoods would be under one column, and the corresponding income value would be in a second column. The second issue was that the median household incomes were strings, and not numerics. Hence, we converted them to the correct type. 
+
+### 2.1.1. Wrangling the AirBnB Data
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+summary(abnb)
+str(abnb)
+head(abnb)
+
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+
+abnb[] <- lapply(abnb, function(x) gsub("N/A", NA, x))
+convert_price_to_double <- function(price_char) {
+  price_double <- as.numeric(sub("\\$", "", price_char))
+  return(price_double)
+}
+
+abnb$price <- sapply(abnb$price, convert_price_to_double)
+abnb_sub <- abnb[, c("neighborhood_overview", "neighbourhood_cleansed", "latitude", "longitude", "property_type", "price")]
+abnb_sub$latitude <- as.numeric(abnb_sub$latitude)
+abnb_sub$longitude <- as.numeric(abnb_sub$longitude)
+
+```
+
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+summary(abnb_sub)
+
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+abnb_sub <- abnb_sub[complete.cases(abnb_sub$price), ]
+head(setorder(abnb_sub, price), 30)$price
+abnb_sub <- abnb_sub[abnb_sub$price > 1]
+
+```
+
+
+Finally, we wrangled the AirBnB data. In the AirBnB data, a number of observations under specific columns were empty or put as missing under the string "N/A", not actually formally given the NA variable. Hence, we made that change. Another issue, was that prices were of type character with a dollar sign pre-pended to the string. We hence fixed that problem by removing the dollar sign, and converting the price to a numeric. Finally, a number of numerical variables like the minimum nights a renter had to stay, were represented by strings, rather than integers. So we converged those to integers.
+
+In terms of unrealistic data, one accommodation set its rent price to just \$1. This observation also required the renter to say over 1000 nights. This is rather unrealistic, so we removed this observation.  
+
+Finally, we consider two further changes we need to make to the variables to ensure easy interpretability and agreement with the other datasets.
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+abnb_sub$property_type <- ifelse(grepl("^Entire", abnb_sub$property_type), "Entire property",
+                                 ifelse(grepl("^Private room", abnb_sub$property_type), "Private room",
+                                        ifelse(grepl("^Shared room", abnb_sub$property_type), "Shared room",
+                                               ifelse(grepl("^Room", abnb_sub$property_type), "Unspecified room", abnb_sub$property_type))))
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+levels(as.factor(abnb_sub$property_type))
+
+```
+
+Firstly, recall that we consider property type as a variable we need to adjust for. The problem with the property type as it stands, is that it is a categorical variable with 58 levels. This is bad for interpretability. Hence, we combine property types under 13 few broad categories.These categories were chosen by analysing the prefixes of each category (e.g. 13 of the original categories had "entire" followed by some house type like villa, so these are classified under "entire property"). 
+
+The second consideration was the neighbourhoods that were listed in the observations for this data. Toronto underwent a change in the scheme it used for defining neighbourhoods in 2021, going from 140 to 158 neighbourhoods. To align with the current neighbourhood scheme, we choose to do our analysis using the 158 neighbourhoods; duly the other datasets follow that scheme. However, a few observations in the dataset still used the 140 scheme. Due to the difficulty of mapping exactly which neighbourhood those observations would lie in under the current scheme, we chose to discard those observations.   
+
+## 2.2. Merging and Finalising the Data
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+merged <- merge(
+  x     = abnb_sub,      
+  y     = crime_count, 
+  by.x  = c("neighbourhood_cleansed"),
+  by.y  = c("NEIGHBOURHOOD_158"), 
+  all.x = FALSE,      
+  all.y = FALSE
+)
+
+merged <- merge(
+  x     = merged,      
+  y     = med_dt, 
+  by.x  = c("neighbourhood_cleansed"),
+  by.y  = c("nbd"), 
+  all.x = FALSE,      
+  all.y = FALSE
+)
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+new <- c("nbd", "nbd_desc", "lat", "lon", "property_type", "price", "nbd.crime_count", "nbd.med_hh")
+old <- colnames(merged)
+setnames(merged, old, new)
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+summary(merged)
+
+```
+
+### 2.2.1. Computing Some Remaining Variables
+After we wrangled and cleaned the data separately, we inner joined all of the data on their neighbourhood columns. After merging, there was one final variable that remained to be computed. We had to compute the proximity to downtown for each property - this is a key predictor in our research question. To compute the distance, we first note that the latitude and longitude for downtown Toronto is 43.6515 and -79.3835 respectively (see [2]). So to compute how many kilometres away a given property is, we compute the Haversine distance between the property's coordinates, and downtown's.
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+downtown_coords <- c(43.6515, -79.3835)
+merged$distance_from_downtown <- distHaversine(downtown_coords, merged[, c("lat", "lon")]) / 1000 
+```
+
+### 2.2.2. Finalising Data Cleaning and Wrangling
+
+The first thing we note in the final cleaning step, is that the range for price is 13-999, whereas it is 57200-222000. Since the median household incomes are a couple of order of magnitudes higher, we choose to scale down the median household incomes by dividing by 100, for the purpose of interpretability; this is since we eventually intend to fit a regression model with price as the response. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+merged$nbd.med_hh_scaled <- merged$nbd.med_hh / 100
+
+```
+
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+# Number of outliers
+length(boxplot.stats(merged$price)$out) 
+length(boxplot.stats(merged$nbd.crime_count)$out) 
+length(boxplot.stats(merged$nbd.med_hh_scaled)$out)
+length(boxplot.stats(merged$distance_from_downtown)$out)
+length(boxplot.stats(merged$lat)$out)
+length(boxplot.stats(merged$lon)$out)
+
+```
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide', fig.show='hide'}
+
+ggplot(merged, aes(y = price)) +
+  geom_boxplot() +
+  labs(y = "Price", title = "Boxplot of Property Prices")
+
+ggplot(merged, aes(y = nbd.crime_count)) +
+  geom_boxplot() +
+  labs(y = "Crimes (/day)", title = "Boxplot of Crimes (/day) in Past Year in Neighbourhood")
+
+ggplot(merged, aes(y = nbd.med_hh_scaled)) +
+  geom_boxplot() +
+  labs(y = "Dollars", title = "Boxplot of Scaled Med. HH Income in Past Year in Neighbourhood")
+
+ggplot(merged, aes(y = distance_from_downtown)) +
+  geom_boxplot() +
+  labs(y = "Kilometres", title = "Boxplot of Kilometres From Downtown")
+
+```
+
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+merged$property_type <- as.factor(merged$property_type)
+merged$nbd <- as.factor(merged$nbd)
+```
+
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide', fig.show='hide'}
+property_table <- table(merged$property_type)
+print(property_table)
+
+```
+Next, we note that the only levels in the categorical variable that represents property type that have more than 21 observations are: "Shared room", "Private room", and "Entire property". Since all of the rest of the levels have miniscule amounts of data, we remove those observations, to minimise extreme class imbalance.
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide', fig.show='hide'}
+
+remove_type <- c("Boat", "Camper/RV", "Casa particular", "Castle", "Tiny home", "Treehouse", "Unspecified room")
+
+merged <- merged[!(property_type %in% remove_type)]
+
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide', fig.show='hide'}
+merged <- merged[, -c("nbd.med_hh")]
+dim(merged)
+
+```
+At the end of the cleaning process, we end up with eleven columns, and 8982 observations. We specify the variables we will be using in the rest of the analysis and what they represent below. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+variables <- c("nbd", "nbd_desc", "lat", "lon", "property_type", 
+               "price", "nbd.crime_count", "distance_from_downtown", "nbd.med_hh_scaled")
+
+variable_description <- c("Neighborhood", "Neighbourhood Description Given by Host", 
+                           "Latitude", "Longitude", "Property Type", 
+                           "Price of Property", "Crime Count in Neighborhood (/day) in Past Year", 
+                           "Distance from Downtown (km)",
+                           "Scaled Median Household Income in Neighborhood (/$100)")
+
+variable_type <- c("Categorical", "Not Used as Covariate", "Numerical Predictor", "Numerical Predictor", "Categorical Confounder", 
+                   "Numerical Response", "Numerical Predictor", "Numerical Predictor", 
+                   "Numerical Response")
+
+variable_table <- data.frame(Variable = variables,
+                              Meaning = variable_description,
+                              Role = variable_type)
+
+kable(variable_table) %>%
+  kable_styling(full_width = FALSE, "striped") %>%
+  add_header_above(c("Variable" = 1, "Information" = 2)) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, bold = TRUE) 
+```
+
+**Table 1: Variable Descriptions**
+
+## 2.3. Methods for Data Exploration of Variables
+
+Now we explain how we initially analysed the variable that we used our exploration. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide', fig.show='hide'}
+
+ggplot(merged, aes(x = price)) + 
+  geom_histogram(binwidth = 20, color = "black", alpha = 0.7) +
+  labs(title = "Histogram of Price",
+       x = "Dollars",
+       y = "Frequency")
+
+ggplot(merged, aes(x = distance_from_downtown)) + 
+  geom_histogram(binwidth = 1, color = "black", alpha = 0.7) +
+  labs(title = "Histogram of Distance From Downtown",
+       x = "Distance (km)",
+       y = "Frequency")
+
+ggplot(merged, aes(x = nbd.crime_count)) + 
+  geom_histogram(binwidth = 1, color = "black", alpha = 0.7) +
+  labs(title = "Histogram of Crime Count in Neighborhood (/day) in Past Year",
+       x = "Crime Count (/day)",
+       y = "Frequency")
+
+ggplot(merged, aes(x = nbd.med_hh_scaled)) + 
+  geom_histogram(binwidth = 60, color = "black", alpha = 0.7) +
+  labs(title = "Scaled Median Household Income in Neighborhood (/$100)",
+       x = "Dollars (/100)",
+       y = "Frequency")
+
+```
+
+Our analysis will start by analysing summaries about each of the numerical and categorical variables we are interested in. Once we have that introductory understanding of the properties of the variables, we begin to explore relationships between the variables. 
+
+The first thing we do, is some text analysis. In our data, we have access to descriptions that the host of the property wrote, to describe it: "nbd_desc" in our nomenclature. So to get an introductory understanding of whether neighbourhoods impact price, by seeing whether the top tokens in the descriptions differ between different listing price levels.
+
+That only provides us with a broad idea of whether we can expect any stark differences between price levels, at least from the perspective of the hosts. So we turn our attention to analysing how the distribution of price changes (or doesn't change) with the predictors. Namely, we plot a stacked histogram of price, with respect to the property type. This gives us an indication of how much of an effect our confounder has. 
+
+We then plot boxplots of the price distribution, over different levels of median household income and crime counts (which are two of our predictors of interest) to see if it seems to have any notable impact on price. To solidify our understanding of whether it does, we follow that visualisation up, with a scatterplot involving crime counts, income, and price. 
+Our final visualisation is a map of each neighbourhood in Toronto, coloured by the price. By marking downtown on the map, we get a rough idea of whether proximity to downtown actually matters. 
+
+After getting a grasp of the relationships of interest from the visualisations, we formally test the relationships by 1) building a mean model with price as the response and neighbourhood as the "treatment", and 2) building a linear regression model to directly answer our research question. 
+
+# 3. Preliminary Results
+## 3.1. Summary Statistics
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+setDT(merged)
+stats <- stat.desc(merged[,c("price", 
+                        "distance_from_downtown", 
+                        "nbd.crime_count",
+                        "nbd.med_hh_scaled")])
+stats_df <- as.data.frame(stats)
+stats_df[] <- lapply(stats_df, function(x) if(is.numeric(x)) sprintf("%.2f", x) else x)
+rownames(stats_df) <- c("# of Values", "# Null", "# Missing", "Min", "Max", "Range", "Sum", "Median", "Mean", "SE of Mean", "95% CI of Mean", "Variance", "SD", "Coef. of Variation")
+kable(stats_df) %>%
+  kable_styling(full_width = FALSE, "striped") %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, bold = TRUE) 
+```
+
+**Table 2: Summary Statistics For Numerical Variables**
+
+In table 2, we see that none of the variables have any missing values. For all of the variables, the mean is larger than the median. As well, the mean for all variables appears to be closer to the min value, than the max. Both of these facts indicate that all of the distributions are to some degree, right-skewed. 
+
+This makes sense for all of the variables. Most properties that are listed are likely normal houses or apartments, so the right skew occurs due to the occasional lister who puts up a property for rent that is very upscale. A similar rationale explains why household income is right skewed. As for distance to downtown, the right skew also makes sense. One would expect that most properties in Toronto proper, would be centred around Downtown, so for most places, the distance would be small, and hence, a right skew. For crimes per day, most places would be relatively safe, except for a handful of neighbourhoods.  
+
+Now we look at the one categorical variable represented in our research question. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+property_table <- table(merged$property_type)
+
+prop_property <- prop.table(property_table)
+
+property_df <- data.frame(type = names(property_table),
+                          count = as.numeric(property_table),
+                          proportion = as.numeric(prop_property))
+
+property_df <- property_df[property_df$count > 0,]
+
+kable(property_df, 
+      align = c("l", "c", "c"), 
+      format.args = list(scientific = FALSE)) %>%
+  kable_styling(full_width = FALSE)
+
+```
+**Table 3: Summary Statistics For Property Type**
+
+We see that about 56% of the data properties allow for the rent of the entire property, 42% allow for a private room, and just 1% allow for a shared room. This makes sense, since most consumers would prefer living with some degree of privacy. So, listings that allow for that are likely to be more common, just to align with demand. 
+
+## 3.2. Visualisations
+
+Now we do visualisations. We start by analysing the neighbourhood descriptions that hosts write on the listing page, detailing qualities of the neighbourhood. Particularly, we want to see if the words they use differ by price level. Here, we defining a price to be "low" (if between 0-quartile 1), "medium" (if between quartile 1-3), or "high" (above quartile 3). 
+
+```{r fig.width=7, fig.height=7, echo = FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+prices <- merged$price
+p.q <- quantile(prices, na.rm = TRUE)
+merged$price_level <- ifelse(prices >=  0 & prices <= p.q[2], "low",
+                                ifelse(prices > p.q[2] & prices <= p.q[4], "medium",
+                                       ifelse(prices > p.q[4], "high", NA)))
+
+sw <- c(stopwords("english"), "br", "toronto", "neighbourhood", "neighborhood")
+merged.text <- merged[!is.na(merged$nbd_desc), ]
+merged.text_low <- merged.text[price_level == "low"]
+merged.text_mid <- merged.text[price_level == "medium"]
+merged.text_high <- merged.text[price_level == "high"]
+
+palette_low <- brewer.pal(9, "Blues")[4:9]
+palette_mid <- brewer.pal(9, "Purples")[4:9]
+palette_high <- brewer.pal(9, "Oranges")[4:9]
+
+tokens_low <- merged.text_low |>
+  select(nbd_desc) |>
+  unnest_tokens(token, nbd_desc) |>
+  filter(!token %in% sw) |>
+  filter(!str_detect(token, "[[:digit:]]+")) |>
+  count(token, sort = TRUE) |>
+  head(20)
+
+tokens_mid <- merged.text_mid |>
+  select(nbd_desc) |>
+  unnest_tokens(token, nbd_desc) |>
+  filter(!token %in% sw) |>
+  filter(!str_detect(token, "[[:digit:]]+")) |>
+  count(token, sort = TRUE) |>
+  head(20)
+
+tokens_high <- merged.text_high |>
+  select(nbd_desc) |>
+  unnest_tokens(token, nbd_desc) |>
+  filter(!token %in% sw) |>
+  filter(!str_detect(token, "[[:digit:]]+")) |>
+  count(token, sort = TRUE) |>
+  head(20)
+
+layout(matrix(1:3, nrow = 1)) 
+
+par(mar = c(2, 2, 2, 2)) 
+wordcloud(words = tokens_low$token, 
+          freq = tokens_low$n,
+          scale = c(2.5, 0.25),  
+          max.words = 50,
+          colors = palette_low)     
+text(x = 0.5, y = -0.2, labels = "Low Price", cex = 1.5, adj = 0.5)
+
+wordcloud(words = tokens_mid$token, 
+          freq = tokens_mid$n,
+          scale = c(2.5, 0.25),
+          max.words = 50,
+          colors = palette_mid)
+text(x = 0.5, y = -0.2, labels = "Mid Price", cex = 1.5, adj = 0.5)
+
+wordcloud(words = tokens_high$token, 
+          freq = tokens_high$n,
+          scale = c(2.5, 0.25),
+          max.words = 50,
+          colors = palette_high)
+text(x = 0.5, y = -0.2, labels = "High Price", cex = 1.5, adj = 0.5)
+
+
+```
+
+**Figure 1: Word Clouds of Neighbourhood Descriptions, by Price Level**
+
+We see in Figure 1 that the words used are almost the same across all three price levels. Namely, there is an emphasis on walkability, restaurants and shops, and being close to parks. On one hand, this may just be telling us that hosts like to emphasise those facts irrespective of price levels since they know they will appeal to the consumer. 
+
+On the other hand, it is notable that all of the things that are emphasised in the word clouds are things that characterise downtown: namely quick access to amenities and easy walkability. If we interpret these words as what hosts think will appeal to a customer, clearly that means the customer demands these things. And if they're found in downtown, then we would expect demand for AirBnBs near downtown to be higher - and hence, raise the cost of the listing. So this can suggest in a weak sense that proximity to downtown may have some influence on price (in fact, this is verified explicitly later in section 4). 
+
+The next visualisation we observe is the stacked histogram of price, by property type. The idea is that we want to see if price changes by property. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+colors <- c("Entire property" = "#1f77b4",  
+            "Private room" = "#ff7f0e",      
+            "Shared room" = "#2ca02c")       
+
+ggplot(merged, aes(x = price, fill = property_type)) +
+  geom_histogram(position = "identity", bins = 30, alpha = 0.5) +
+  scale_fill_manual(values = colors) +  
+  labs(title = "Stacked Histogram of Price, by Property Type",
+       x = "Price", y = "Frequency", fill = "Property Type")
+
+
+```
+
+**Figure 2: Stacked Histogram of Price, by Property Type**
+
+As we can see in the above distribution, it does to some degree. The distribution for a private room's price is must narrower and clustered around lower prices, in contrast to entire property. This makes sense, since renting an entire property would make sense to cost a lot more. 
+
+Most importantly, it justifies our choice to adjust for property type, because as we can see, it does have an impact on our desired response. 
+
+Next we analyse whether the price distribution according to different levels of scaled median household income, and crime. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=7}
+
+incomes <- merged$nbd.med_hh_scaled
+hh.q <- quantile(incomes, na.rm = TRUE)
+merged$income_level <- ifelse(incomes >=  0 & incomes <= hh.q[2], "low",
+                              ifelse(incomes > hh.q[2] & incomes <= hh.q[4], "medium",
+                                     ifelse(incomes > hh.q[4], "high", NA)))
+
+cc <- merged$nbd.crime_count
+cc.q <- quantile(cc, na.rm = TRUE)
+merged$cc_level <- ifelse(cc >=  0 & cc <= cc.q[2], "low",
+                          ifelse(cc > cc.q[2] & cc <= cc.q[4], "medium",
+                                 ifelse(cc > cc.q[4], "high", NA)))
+
+merged$income_level <- as.factor(merged$income_level)
+merged$cc_level <- as.factor(merged$cc_level)
+
+
+p1 <- ggplot(merged, aes(x = income_level, y = price, fill = income_level)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Price by Scaled Median Household Income Level",
+       x = "Scaled Income Level",
+       y = "Price",
+       fill = "Income Level") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+p2 <- ggplot(merged, aes(x = cc_level, y = price, fill = cc_level)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Price by Crime Level",
+       x = "Crime Level",
+       y = "Price",
+       fill = "Crime Level") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+plot_grid(p1, p2, ncol = 1)
+
+```
+
+**Figure 3: Boxplot of Price, by Scaled Median Household Income Level and Crime Level**
+
+We note here that the levels for scaled median household income and crime are defined in exactly the same way as they were for price level. 
+
+Analysing the boxplots, there appear to be a substantial amount of outliers for price. However, the actual distribution seems not to really differ between either crime level, or scaled household income. What this suggests, is that even if there is a significant relationship between these variables and price, the actual rate at which price changes with respect to these variables probably will not be that much. 
+
+
+To verify that claim, we now plot a scatterplot with price as the response. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+ggplot(merged, aes(x = price, y = nbd.med_hh_scaled, size = nbd.crime_count, color = property_type)) +
+  geom_point(alpha=0.5) +
+  scale_size_continuous(range = c(1, 5)) +  
+  labs(title = "Price Against Scaled Household Income, by Crimes and Property Type",
+       x = "Scaled Household Income (/100)",
+       y = "Price",
+       size = "Crimes (/Day)",
+       color = "Property Type")
+
+```
+
+**Figure 4: Price Against Scaled Household Income, by Crimes and Property Type**
+
+Here, we plot price against scaled household income. The size of the dots correspond to increasing crimes levels (that is, crimes committed per day). The colour corresponds to the property type. 
+
+We see that there is at best a weak positive linear association between price and scaled household income. Of course, if there was going to be any association at all, then it makes sense that it would be positive, since if the neighbourhood is affluent, the property is likely to be upscale, and hence cost more. But the fact that it seems that it is not too strong, agrees with our explanation in the introduction of this report. 
+
+In terms of crimes per day, we the majority of the large circles (which mean more crime per day) appear to be clustered around the bottom of the plot - i.e. where price is low. This would give some credence to the claim that more crime leads to lower prices - which is not unreasonable to claim since one would have likely have more crime in less affluent areas. With that said, this does not provide any conclusive evidence towards a relationship, particularly since the small circles (which represent less crimes) appear to be evenly spread across the chart.
+
+Finally, it is worth noting that the majority of the private room listings appear to be in places where household income is lower. On the other hand, those renting out the entire property appear to be evenly spread. There seems to be minimal difference with respect to price though.
+
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+# I take inspiration from my HW1 code here. 
+
+merged.nbd_summary <- merged[, .(
+  lon = mean(lon, na.rm = TRUE),
+  lat = mean(lat, na.rm = TRUE),
+  price = round(mean(price, na.rm = TRUE))
+), by = c("nbd")]
+
+downtown_coords <- data.frame(lon = -79.3835, lat = 43.6515)
+
+palette_low <- brewer.pal(9, "Blues")[4:9]
+
+label_html <- lapply(merged.nbd_summary$nbd, function(nbd) {
+  HTML(paste("Neighborhood: ", nbd))
+})
+palette <- colorNumeric(palette = palette_low, domain = merged.nbd_summary$price)
+
+leaflet(merged.nbd_summary) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    ~lon, 
+    ~lat,
+    color = ~palette(price),
+    popup = ~as.character(merged.nbd_summary$nbd),
+    label = label_html,
+    radius = 8,
+    opacity = 0.5, 
+    fillOpacity = 1) %>%
+  addLabelOnlyMarkers(
+    ~lon, ~lat,
+    label = ~as.character(merged.nbd_summary$price),  
+    labelOptions = labelOptions(
+      noHide = TRUE,  
+      textOnly = TRUE,  
+      direction = "center",
+      style = list(color = "white")
+    )
+  ) %>% 
+  addCircleMarkers(
+    data = downtown_coords,
+    downtown_coords$lon, 
+    downtown_coords$lat,
+    color = "Purple",
+    popup = ~as.character("DT"),
+    label = "DT",
+    radius = 8,
+    opacity = 0.5, 
+    fillOpacity = 1) %>%
+  addLabelOnlyMarkers(
+    downtown_coords$lon, downtown_coords$lat,
+    label = ~as.character("DT"),  
+    labelOptions = labelOptions(
+      noHide = TRUE,  
+      textOnly = TRUE,  
+      direction = "center",
+      style = list(color = "white")
+    )
+  ) |>
+  addLegend('bottomleft', 
+            pal = palette, 
+            values = merged.nbd_summary$price, 
+            title = "Price")
+
+```
+
+**Figure 5: Map of Toronto Neighbourhoods with Mean Price of AirBnB listings**
+
+
+Finally, we draw a map, where each marker is on a neighbourhood, and written on the marker is the mean price for an AirBnB listing in that neighbourhood. The darker the colour, the higher the price. Hovering over each marker will yield the neighbourhood name. 
+
+We can see that the less costly places to get an AirBnB are on the outskirts of city. And it does appear to be true in general, that as you get closer to downtown (which is marked red on the map), the markers get darker - and hence of higher price. So it does seem to suggest that proximity to downtown does matter towards prices. 
+
+We verify all of these assertions now, by modelling.
+
+## 3.3. Model Fitting
+
+The first things we do, is fit a simple mean model. Here, all we check is the hypothesis $H_0:$ all neighbourhood price means are the same, against $H_1:$ there is at least one neighbourhood that differs in mean. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+anova.res <- aov(price ~ nbd, data = merged)
+anova_table <- summary(anova.res)[[1]]
+anova_df <- as.data.frame(anova_table)
+rownames(anova_df) <- c("Neighbourhood", "Residuals")
+kable(anova_df, 
+      align = c("l", rep("c", ncol(anova_df) - 1)), 
+      format = "html") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+**Table 4: ANOVA Results**
+
+We see that the p-value is rounded to zero. So at least, we can conclude that there is a signficant difference between at least one neighbourhood's mean AirBnB's price, against the others. Since some neighbourhoods do have different prices than others, it is reasonable to conclude that neighbourhood does matter to some degree. 
+
+Now we explicitly answer our research question using linear regression. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+lin.res <- lm(price ~ nbd.med_hh_scaled + nbd.crime_count + distance_from_downtown + property_type, data = merged)
+coefficients <- summary(lin.res)$coefficients[, c(1, 2, 4)]
+coefficients_df <- as.data.frame(coefficients)
+colnames(coefficients_df) <- c("Coefficient", "Std. Error", "P-value")
+rownames(coefficients_df) <- c("Intercept", "Median Household Income Scaled", "Crimes Per Day in Past Year", "Distance From Downtown", "Property Type: Private Room", "Property Type: Shared Room")
+
+kable(coefficients_df, 
+      align = c("l", "c", "c"), 
+      format = "html") %>%
+  kable_styling(full_width = FALSE)
+
+
+```
+
+**Table 5: Linear Regression Results**
+
+We see that the p-value for all of the coefficients significant. So it is in fact the case that these predictors have a significant association with price. Looking at the specific values now, we see that in the presence of all other predictors, for a one unit increase in the distance from downtown, we expect that the price goes down by \$1.27. This agrees with the results we saw from figure 5, and with the rationale we gave for why this can make sense. 
+
+We also see that in the presence of all the other predictors, for a $100 increase in medium household income, the price of the listing hoes up by on average, \$0.05. The weak positive trend agrees with what we concluded under figure 4, and the rationale given there for why this can make sense.
+
+Finally of note, is that in the presence of the other predictors, for one more crime per day in the past year in that neighbourhood, the price of a listing in the neighbourhood increases by \$6.15 on average. This is very counterintuitive and almost contradictory to what we expected from figure 4, and from intuition (in section one). The only way that this can make sense, is that if we consider downtown to be more crime prone than the rest of the city. Then since proximity of downtown increases price, so would crime. 
+
+```{r echo = FALSE, message=FALSE, warning=FALSE, results='hide'}
+
+summary(lin.res)
+
+```
+Finally, the $R^2 = 0.2171$, which means that about 21.7% of the variation in the response is explained by the predictors.  
+
+# 4. Conclusion
+
+In conclusion, we end up rejecting the theory we postulated in section one about whether neighbourhood characteristics impact prices. The ANOVA tells us in general, that there exist difference in prices between neighbourhoods. And the linear regression gives us an explicit relationship between certain neighbourhood characteristics and price. In other words, we conclude a lot of the same neighbourhood characteristics that one would expect that the houses for sale would be affected by, are also things that affect AirBnBs in general. 
+
+However, it is worth taking our results with a grain of caution. Only 21.7% of the variation in the response is explained by the predictors, which means that our model does not have strong explanatory power. So it may not be easily generalisable to other settings - not just Toronto. 
+
+# 5. References
+
+  1. Get the Data. Inside Airbnb. (n.d.). http://insideairbnb.com/get-the-data/
+  2. Latitude.to. (n.d.). Latitude and longitude of Downtown Toronto. Latitude.to, maps, geolocated articles, latitude longitude coordinate conversion. https://latitude.to/articles-by-country/ca/canada/7404/downtown-toronto 
+  3. Major crime indicators open data. Toronto Police Service Public Safety Data Portal. (n.d.). [https://data.torontopolice.on.ca/datasets/TorontoPS::major-crime-indicators-open-data/about](https://data.torontopolice.on.ca/datasets/TorontoPS::major-crime-indicators-open-data/about) 
+  4. Open data dataset. City of Toronto Open Data Portal. (n.d.). https://open.toronto.ca/dataset/neighbourhood-profiles/ 
+
+
+
+
+
+
+
+
