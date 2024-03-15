@@ -424,7 +424,7 @@ property_df <- data.frame(Type = names(property_table),
                           Count = as.numeric(property_table),
                           Proportion = as.numeric(prop_property))
 
-property_df <- property_df[property_df$count > 0,]
+property_df <- property_df[property_df$Count > 0,]
 
 kable(property_df, 
       align = c("l", "c", "c"), 
